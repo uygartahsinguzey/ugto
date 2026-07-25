@@ -1,0 +1,564 @@
+(() => {
+  "use strict";
+
+  const SAVE_KEY = "tinyKingdomSaveV1";
+  const now = () => Date.now();
+
+  const defaultState = {
+    resources: { wood: 0, stone: 0, food: 0, gold: 0 },
+    workers: { lumberjack: 0, miner: 0, farmer: 0, merchant: 0 },
+    buildings: { house: 1, sawmill: 0, mine: 0, farm: 0, market: 0, castle: 0 },
+    upgrades: { axe: 0, carts: 0, tools: 0, irrigation: 0, trade: 0 },
+    crowns: 0,
+    totalEarned: 0,
+    lastSaved: now(),
+    sound: true,
+    eventAt: now() + 65000,
+    kingdomName: "Meşe Vadisi"
+  };
+
+  const workerDefs = {
+    lumberjack: {
+      name: "Oduncu", icon: "🪓", desc: "Her saniye odun üretir.",
+      baseCost: { wood: 15, food: 5 }, unlock: () => true
+    },
+    miner: {
+      name: "Madenci", icon: "⛏️", desc: "Her saniye taş çıkarır.",
+      baseCost: { wood: 45, food: 15 }, unlock: s => s.buildings.mine > 0
+    },
+    farmer: {
+      name: "Çiftçi", icon: "🌾", desc: "Her saniye yemek üretir.",
+      baseCost: { wood: 70, stone: 20 }, unlock: s => s.buildings.farm > 0
+    },
+    merchant: {
+      name: "Tüccar", icon: "🪙", desc: "Her saniye altın kazandırır.",
+      baseCost: { wood: 130, stone: 70, food: 70 }, unlock: s => s.buildings.market > 0
+    }
+  };
+
+  const buildingDefs = {
+    house: {
+      name: "Ev", icon: "🏠", desc: "İşçi kapasitesini 5 artırır.",
+      baseCost: { wood: 30 }, unlock: () => true
+    },
+    sawmill: {
+      name: "Testerehane", icon: "🪚", desc: "Odun üretimini %25 artırır.",
+      baseCost: { wood: 90, stone: 15 }, unlock: s => s.resources.wood >= 35 || s.buildings.sawmill > 0
+    },
+    mine: {
+      name: "Maden", icon: "⛏️", desc: "Madenci satın almayı açar.",
+      baseCost: { wood: 140, stone: 10 }, unlock: s => s.buildings.sawmill > 0
+    },
+    farm: {
+      name: "Çiftlik", icon: "🌾", desc: "Çiftçi satın almayı açar.",
+      baseCost: { wood: 210, stone: 80 }, unlock: s => s.buildings.mine > 0
+    },
+    market: {
+      name: "Pazar", icon: "🏪", desc: "Tüccar ve altın üretimini açar.",
+      baseCost: { wood: 360, stone: 170, food: 120 }, unlock: s => s.buildings.farm > 0
+    },
+    castle: {
+      name: "Kale", icon: "🏰", desc: "Prestij sistemini açar.",
+      baseCost: { wood: 900, stone: 500, food: 400, gold: 150 }, unlock: s => s.buildings.market > 0
+    }
+  };
+
+  const upgradeDefs = {
+    axe: {
+      name: "Keskin Baltalar", icon: "🪓", desc: "Dokunma gücü +2.",
+      max: 10, cost: lvl => ({ wood: 80 * (lvl + 1) }),
+      unlock: () => true
+    },
+    carts: {
+      name: "Taşıma Arabaları", icon: "🛒", desc: "Tüm üretim +%15.",
+      max: 8, cost: lvl => ({ wood: 120 * (lvl + 1), stone: 40 * (lvl + 1) }),
+      unlock: s => s.buildings.sawmill > 0
+    },
+    tools: {
+      name: "Demir Aletler", icon: "⚒️", desc: "Odun ve taş üretimi +%30.",
+      max: 6, cost: lvl => ({ wood: 220 * (lvl + 1), stone: 120 * (lvl + 1) }),
+      unlock: s => s.buildings.mine > 0
+    },
+    irrigation: {
+      name: "Sulama Kanalları", icon: "💧", desc: "Yemek üretimi +%40.",
+      max: 5, cost: lvl => ({ wood: 300 * (lvl + 1), stone: 180 * (lvl + 1), food: 100 * (lvl + 1) }),
+      unlock: s => s.buildings.farm > 0
+    },
+    trade: {
+      name: "Ticaret Yolları", icon: "🛣️", desc: "Altın üretimi +%50.",
+      max: 5, cost: lvl => ({ wood: 500 * (lvl + 1), stone: 260 * (lvl + 1), gold: 80 * (lvl + 1) }),
+      unlock: s => s.buildings.market > 0
+    }
+  };
+
+  let state = loadState();
+  let offlineReward = null;
+
+  const els = {
+    woodValue: document.getElementById("woodValue"),
+    stoneValue: document.getElementById("stoneValue"),
+    foodValue: document.getElementById("foodValue"),
+    goldValue: document.getElementById("goldValue"),
+    woodRate: document.getElementById("woodRate"),
+    stoneRate: document.getElementById("stoneRate"),
+    foodRate: document.getElementById("foodRate"),
+    goldRate: document.getElementById("goldRate"),
+    gatherBtn: document.getElementById("gatherBtn"),
+    tapPowerLabel: document.getElementById("tapPowerLabel"),
+    floatingLayer: document.getElementById("floatingLayer"),
+    workersPanel: document.getElementById("workersPanel"),
+    buildingsPanel: document.getElementById("buildingsPanel"),
+    upgradesPanel: document.getElementById("upgradesPanel"),
+    kingdomPanel: document.getElementById("kingdomPanel"),
+    saveBtn: document.getElementById("saveBtn"),
+    soundBtn: document.getElementById("soundBtn"),
+    statusText: document.getElementById("statusText"),
+    offlineDialog: document.getElementById("offlineDialog"),
+    offlineRewards: document.getElementById("offlineRewards"),
+    collectOfflineBtn: document.getElementById("collectOfflineBtn"),
+    eventDialog: document.getElementById("eventDialog"),
+    eventIcon: document.getElementById("eventIcon"),
+    eventTitle: document.getElementById("eventTitle"),
+    eventText: document.getElementById("eventText"),
+    eventAcceptBtn: document.getElementById("eventAcceptBtn")
+  };
+
+  function clone(obj) {
+    return JSON.parse(JSON.stringify(obj));
+  }
+
+  function mergeDefaults(saved) {
+    const merged = clone(defaultState);
+    for (const key of Object.keys(merged)) {
+      if (saved && typeof saved[key] === "object" && !Array.isArray(saved[key])) {
+        merged[key] = { ...merged[key], ...saved[key] };
+      } else if (saved && saved[key] !== undefined) {
+        merged[key] = saved[key];
+      }
+    }
+    return merged;
+  }
+
+  function loadState() {
+    try {
+      const raw = localStorage.getItem(SAVE_KEY);
+      return raw ? mergeDefaults(JSON.parse(raw)) : clone(defaultState);
+    } catch (err) {
+      console.warn("Save load failed", err);
+      return clone(defaultState);
+    }
+  }
+
+  function saveState(showStatus = false) {
+    state.lastSaved = now();
+    localStorage.setItem(SAVE_KEY, JSON.stringify(state));
+    if (showStatus) setStatus("Krallık kaydedildi.");
+  }
+
+  function format(value) {
+    if (value < 1000) return Math.floor(value).toLocaleString("tr-TR");
+    const units = [
+      [1e12, "T"], [1e9, "Mr"], [1e6, "Mn"], [1e3, "B"]
+    ];
+    for (const [n, label] of units) {
+      if (value >= n) return `${(value / n).toFixed(value >= n * 100 ? 0 : 1)} ${label}`;
+    }
+    return Math.floor(value).toLocaleString("tr-TR");
+  }
+
+  function productionRates() {
+    const crownBonus = 1 + state.crowns * 0.1;
+    const globalBonus = 1 + state.upgrades.carts * 0.15;
+    const woodBonus = (1 + state.buildings.sawmill * 0.25) * (1 + state.upgrades.tools * 0.3);
+    const stoneBonus = 1 + state.upgrades.tools * 0.3;
+    const foodBonus = 1 + state.upgrades.irrigation * 0.4;
+    const goldBonus = 1 + state.upgrades.trade * 0.5;
+
+    return {
+      wood: state.workers.lumberjack * woodBonus * globalBonus * crownBonus,
+      stone: state.workers.miner * stoneBonus * globalBonus * crownBonus,
+      food: state.workers.farmer * foodBonus * globalBonus * crownBonus,
+      gold: state.workers.merchant * goldBonus * globalBonus * crownBonus
+    };
+  }
+
+  function tapPower() {
+    return 1 + state.upgrades.axe * 2 + state.crowns;
+  }
+
+  function totalWorkers() {
+    return Object.values(state.workers).reduce((a, b) => a + b, 0);
+  }
+
+  function workerCapacity() {
+    return state.buildings.house * 5;
+  }
+
+  function scaledCost(base, owned, scale = 1.16) {
+    const result = {};
+    for (const [key, value] of Object.entries(base)) {
+      result[key] = Math.ceil(value * Math.pow(scale, owned));
+    }
+    return result;
+  }
+
+  function canAfford(cost) {
+    return Object.entries(cost).every(([key, value]) => state.resources[key] >= value);
+  }
+
+  function spend(cost) {
+    for (const [key, value] of Object.entries(cost)) state.resources[key] -= value;
+  }
+
+  function costText(cost) {
+    const icons = { wood: "🪵", stone: "🪨", food: "🌾", gold: "🪙" };
+    return Object.entries(cost).map(([k, v]) => `${icons[k]} ${format(v)}`).join(" · ");
+  }
+
+  function setStatus(text) {
+    els.statusText.textContent = text;
+  }
+
+  function playClick() {
+    if (!state.sound) return;
+    try {
+      const audio = new AudioContext();
+      const osc = audio.createOscillator();
+      const gain = audio.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(520, audio.currentTime);
+      gain.gain.setValueAtTime(0.04, audio.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audio.currentTime + 0.07);
+      osc.connect(gain);
+      gain.connect(audio.destination);
+      osc.start();
+      osc.stop(audio.currentTime + 0.07);
+    } catch {}
+  }
+
+  function floatingText(text, x, y) {
+    const node = document.createElement("span");
+    node.className = "float-text";
+    node.textContent = text;
+    node.style.left = `${x}px`;
+    node.style.top = `${y}px`;
+    els.floatingLayer.appendChild(node);
+    setTimeout(() => node.remove(), 800);
+  }
+
+  function buyWorker(key) {
+    const def = workerDefs[key];
+    if (!def.unlock(state)) return;
+    if (totalWorkers() >= workerCapacity()) {
+      setStatus("Daha fazla işçi için yeni bir ev inşa et.");
+      return;
+    }
+    const cost = scaledCost(def.baseCost, state.workers[key]);
+    if (!canAfford(cost)) return;
+    spend(cost);
+    state.workers[key]++;
+    setStatus(`${def.name} krallığa katıldı.`);
+    playClick();
+    renderAll();
+  }
+
+  function buyBuilding(key) {
+    const def = buildingDefs[key];
+    if (!def.unlock(state)) return;
+    const cost = scaledCost(def.baseCost, state.buildings[key], 1.22);
+    if (!canAfford(cost)) return;
+    spend(cost);
+    state.buildings[key]++;
+    setStatus(`${def.name} inşa edildi.`);
+    playClick();
+    renderAll();
+  }
+
+  function buyUpgrade(key) {
+    const def = upgradeDefs[key];
+    const lvl = state.upgrades[key];
+    if (!def.unlock(state) || lvl >= def.max) return;
+    const cost = def.cost(lvl);
+    if (!canAfford(cost)) return;
+    spend(cost);
+    state.upgrades[key]++;
+    setStatus(`${def.name} geliştirildi.`);
+    playClick();
+    renderAll();
+  }
+
+  function prestigeReward() {
+    if (!state.buildings.castle) return 0;
+    return Math.floor(Math.sqrt(state.totalEarned / 3500));
+  }
+
+  function prestige() {
+    const reward = prestigeReward();
+    if (reward < 1) {
+      setStatus("Prestij için daha fazla kaynak üretmelisin.");
+      return;
+    }
+    if (!confirm(`${reward} taç kazanıp krallığı yeniden başlatmak istiyor musun?`)) return;
+    const keep = { crowns: state.crowns + reward, sound: state.sound, kingdomName: state.kingdomName };
+    state = clone(defaultState);
+    Object.assign(state, keep);
+    saveState();
+    setStatus(`${reward} taç kazandın. Yeni çağ başladı!`);
+    renderAll();
+  }
+
+  function renderResources() {
+    const rates = productionRates();
+    for (const key of ["wood", "stone", "food", "gold"]) {
+      els[`${key}Value`].textContent = format(state.resources[key]);
+      els[`${key}Rate`].textContent = `+${format(rates[key])}/sn`;
+    }
+    els.tapPowerLabel.textContent = `+${format(tapPower())} odun`;
+    els.soundBtn.textContent = state.sound ? "🔊" : "🔇";
+  }
+
+  function renderWorkers() {
+    const cap = workerCapacity();
+    let html = `<h2 class="section-title">İşçiler · ${totalWorkers()}/${cap}</h2><div class="shop-list">`;
+    for (const [key, def] of Object.entries(workerDefs)) {
+      const unlocked = def.unlock(state);
+      const cost = scaledCost(def.baseCost, state.workers[key]);
+      html += `
+        <article class="shop-item ${unlocked ? "" : "locked-item"}">
+          <div class="shop-icon">${unlocked ? def.icon : "🔒"}</div>
+          <div class="shop-copy">
+            <h3>${def.name} <span class="count">x${state.workers[key]}</span></h3>
+            <p>${unlocked ? def.desc : "Önce gerekli binayı inşa et."}</p>
+          </div>
+          <button class="buy-btn" data-buy-worker="${key}" ${!unlocked || !canAfford(cost) || totalWorkers() >= cap ? "disabled" : ""}>
+            ${costText(cost)}
+          </button>
+        </article>`;
+    }
+    html += "</div>";
+    els.workersPanel.innerHTML = html;
+  }
+
+  function renderBuildings() {
+    let html = `<h2 class="section-title">Binalar</h2><div class="shop-list">`;
+    for (const [key, def] of Object.entries(buildingDefs)) {
+      const unlocked = def.unlock(state);
+      const cost = scaledCost(def.baseCost, state.buildings[key], 1.22);
+      html += `
+        <article class="shop-item ${unlocked ? "" : "locked-item"}">
+          <div class="shop-icon">${unlocked ? def.icon : "🔒"}</div>
+          <div class="shop-copy">
+            <h3>${def.name} <span class="count">Seviye ${state.buildings[key]}</span></h3>
+            <p>${unlocked ? def.desc : "Önceki yapıları geliştirerek aç."}</p>
+          </div>
+          <button class="buy-btn" data-buy-building="${key}" ${!unlocked || !canAfford(cost) ? "disabled" : ""}>
+            ${costText(cost)}
+          </button>
+        </article>`;
+    }
+    html += "</div>";
+    els.buildingsPanel.innerHTML = html;
+  }
+
+  function renderUpgrades() {
+    let html = `<h2 class="section-title">Yükseltmeler</h2><div class="shop-list">`;
+    for (const [key, def] of Object.entries(upgradeDefs)) {
+      const unlocked = def.unlock(state);
+      const lvl = state.upgrades[key];
+      const maxed = lvl >= def.max;
+      const cost = maxed ? {} : def.cost(lvl);
+      html += `
+        <article class="shop-item ${unlocked ? "" : "locked-item"}">
+          <div class="shop-icon">${unlocked ? def.icon : "🔒"}</div>
+          <div class="shop-copy">
+            <h3>${def.name} <span class="count">${lvl}/${def.max}</span></h3>
+            <p>${unlocked ? def.desc : "Krallığını büyüterek aç."}</p>
+          </div>
+          <button class="buy-btn" data-buy-upgrade="${key}" ${!unlocked || maxed || !canAfford(cost) ? "disabled" : ""}>
+            ${maxed ? "TAMAM" : costText(cost)}
+          </button>
+        </article>`;
+    }
+    html += "</div>";
+    els.upgradesPanel.innerHTML = html;
+  }
+
+  function renderKingdom() {
+    const reward = prestigeReward();
+    const next = Math.pow(reward + 1, 2) * 3500;
+    const pct = Math.min(100, state.totalEarned / next * 100);
+    els.kingdomPanel.innerHTML = `
+      <h2 class="section-title">Krallık</h2>
+      <article class="info-card">
+        <h3>👑 Taçlar: ${state.crowns}</h3>
+        <p>Her taç tüm üretimi %10 ve dokunma gücünü +1 artırır.</p>
+      </article>
+      <article class="info-card">
+        <h3>🏰 Prestij</h3>
+        <p>${state.buildings.castle ? `Şimdi yeniden başlarsan <strong>${reward} taç</strong> kazanırsın.` : "Prestij için önce kale inşa et."}</p>
+        <div class="progress"><span style="width:${pct}%"></span></div>
+        <button id="prestigeBtn" class="primary-btn" ${!state.buildings.castle || reward < 1 ? "disabled" : ""}>Yeni Çağ Başlat</button>
+      </article>
+      <article class="info-card">
+        <h3>📊 İstatistik</h3>
+        <p>Toplam üretilen kaynak: <strong>${format(state.totalEarned)}</strong><br>
+        İşçi kapasitesi: <strong>${totalWorkers()}/${workerCapacity()}</strong><br>
+        Krallık bonusu: <strong>+%${state.crowns * 10}</strong></p>
+      </article>
+      <button id="resetBtn" class="danger-btn">Kayıt Verilerini Sıfırla</button>
+    `;
+  }
+
+  function renderVisuals() {
+    const map = {
+      sawmill: state.buildings.sawmill,
+      mine: state.buildings.mine,
+      farm: state.buildings.farm,
+      castle: state.buildings.castle
+    };
+    document.querySelectorAll("[data-visual]").forEach(el => {
+      const key = el.dataset.visual;
+      el.classList.toggle("locked-visual", !map[key]);
+      el.classList.toggle("unlocked-visual", !!map[key]);
+    });
+  }
+
+  function bindDynamicButtons() {
+    document.querySelectorAll("[data-buy-worker]").forEach(btn =>
+      btn.addEventListener("click", () => buyWorker(btn.dataset.buyWorker))
+    );
+    document.querySelectorAll("[data-buy-building]").forEach(btn =>
+      btn.addEventListener("click", () => buyBuilding(btn.dataset.buyBuilding))
+    );
+    document.querySelectorAll("[data-buy-upgrade]").forEach(btn =>
+      btn.addEventListener("click", () => buyUpgrade(btn.dataset.buyUpgrade))
+    );
+    document.getElementById("prestigeBtn")?.addEventListener("click", prestige);
+    document.getElementById("resetBtn")?.addEventListener("click", () => {
+      if (!confirm("Tüm ilerlemen silinsin mi?")) return;
+      localStorage.removeItem(SAVE_KEY);
+      state = clone(defaultState);
+      renderAll();
+    });
+  }
+
+  function renderAll() {
+    renderResources();
+    renderWorkers();
+    renderBuildings();
+    renderUpgrades();
+    renderKingdom();
+    renderVisuals();
+    bindDynamicButtons();
+  }
+
+  function tick(deltaSeconds) {
+    const rates = productionRates();
+    for (const key of Object.keys(rates)) {
+      const gain = rates[key] * deltaSeconds;
+      state.resources[key] += gain;
+      state.totalEarned += gain;
+    }
+  }
+
+  function calculateOffline() {
+    const elapsed = Math.max(0, Math.min(12 * 3600, (now() - state.lastSaved) / 1000));
+    if (elapsed < 15) return;
+    const rates = productionRates();
+    offlineReward = {};
+    for (const key of Object.keys(rates)) offlineReward[key] = rates[key] * elapsed;
+    if (Object.values(offlineReward).some(v => v >= 1)) {
+      els.offlineRewards.innerHTML = Object.entries(offlineReward)
+        .filter(([,v]) => v >= 1)
+        .map(([k,v]) => `<div>${{wood:"🪵",stone:"🪨",food:"🌾",gold:"🪙"}[k]} ${format(v)}</div>`)
+        .join("");
+      els.offlineDialog.showModal();
+    }
+  }
+
+  function randomEvent() {
+    const events = [
+      { icon: "🧝", title: "Gezgin Tüccar", text: "Bir tüccar krallığına uğradı ve 35 altın bıraktı.", gain: { gold: 35 } },
+      { icon: "🌧️", title: "Bereketli Yağmur", text: "Tarlalar canlandı. 120 yemek kazandın.", gain: { food: 120 } },
+      { icon: "🪵", title: "Dev Meşe", text: "Oduncular dev bir meşe buldu. 180 odun kazandın.", gain: { wood: 180 } },
+      { icon: "💎", title: "Dağ Hazinesi", text: "Madenciler gizli bir damar keşfetti. 110 taş kazandın.", gain: { stone: 110 } }
+    ];
+    const event = events[Math.floor(Math.random() * events.length)];
+    for (const [key, value] of Object.entries(event.gain)) {
+      state.resources[key] += value;
+      state.totalEarned += value;
+    }
+    els.eventIcon.textContent = event.icon;
+    els.eventTitle.textContent = event.title;
+    els.eventText.textContent = event.text;
+    els.eventDialog.showModal();
+    state.eventAt = now() + 65000 + Math.random() * 55000;
+    renderAll();
+  }
+
+  document.querySelectorAll(".tab").forEach(tab => {
+    tab.addEventListener("click", () => {
+      document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+      document.querySelectorAll(".panel").forEach(p => p.classList.remove("active"));
+      tab.classList.add("active");
+      document.getElementById(`${tab.dataset.tab}Panel`).classList.add("active");
+    });
+  });
+
+  els.gatherBtn.addEventListener("click", e => {
+    const gain = tapPower();
+    state.resources.wood += gain;
+    state.totalEarned += gain;
+    const rect = els.gatherBtn.getBoundingClientRect();
+    floatingText(`+${format(gain)} 🪵`, rect.left + rect.width / 2 - 25, rect.top - 10);
+    playClick();
+    renderResources();
+  });
+
+  els.saveBtn.addEventListener("click", () => saveState(true));
+  els.soundBtn.addEventListener("click", () => {
+    state.sound = !state.sound;
+    renderResources();
+  });
+
+  els.collectOfflineBtn.addEventListener("click", () => {
+    if (offlineReward) {
+      for (const [key, value] of Object.entries(offlineReward)) {
+        state.resources[key] += value;
+        state.totalEarned += value;
+      }
+    }
+    offlineReward = null;
+    els.offlineDialog.close();
+    renderAll();
+  });
+
+  els.eventAcceptBtn.addEventListener("click", () => els.eventDialog.close());
+
+  let lastFrame = performance.now();
+  function loop(ts) {
+    const delta = Math.min(1, (ts - lastFrame) / 1000);
+    lastFrame = ts;
+    tick(delta);
+    if (ts % 500 < 17) renderResources();
+    if (now() >= state.eventAt && !els.eventDialog.open && !els.offlineDialog.open) randomEvent();
+    requestAnimationFrame(loop);
+  }
+
+  calculateOffline();
+  renderAll();
+  requestAnimationFrame(loop);
+  setInterval(() => {
+    saveState();
+    renderAll();
+  }, 5000);
+
+  window.addEventListener("beforeunload", () => saveState());
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) saveState();
+  });
+
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("service-worker.js").catch(console.warn);
+  }
+})();
