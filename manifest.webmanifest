@@ -1,0 +1,19 @@
+{
+  "name": "Berna V16",
+  "short_name": "Berna",
+  "description": "Miki ile sade, cozy ve odak odaklı üretkenlik deneyimi",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#f7efe6",
+  "theme_color": "#b96f72",
+  "icons": [
+    {
+      "src": "./assets/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
